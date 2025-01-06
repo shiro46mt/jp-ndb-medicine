@@ -1,0 +1,27 @@
+[project]
+name = "jp_ndb_medicine"
+version = "1.0"
+description = "NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのライブラリ"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+  {name = "SHIRO", email = "shiro46mt@gmail.com"}
+]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Natural Language :: Japanese",
+]
+dependencies = [
+  "beautifulsoup4",
+  "openpyxl",
+  "pandas",
+  "requests",
+  "tqdm",
+]
+
+[project.urls]
+Repository = "https://github.com/shiro46mt/jp-ndb-medicine.git"
