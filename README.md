@@ -1,6 +1,7 @@
 [![pytest](https://github.com/shiro46mt/jp-ndb-medicine/actions/workflows/pytest.yml/badge.svg)](https://github.com/shiro46mt/jp-ndb-medicine/actions/workflows/pytest.yml)
 ![GitHub License](https://img.shields.io/github/license/shiro46mt/jp-ndb-medicine)
 [![PyPI - Version](https://img.shields.io/pypi/v/jp-ndb-medicine)](https://pypi.org/project/jp-ndb-medicine/)
+[![PyPI Downloads](https://static.pepy.tech/badge/jp-ndb-medicine)](https://pepy.tech/projects/jp-ndb-medicine)
 
 # jp-ndb-medicine
 NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのライブラリ
