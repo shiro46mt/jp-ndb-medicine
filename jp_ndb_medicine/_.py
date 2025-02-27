@@ -164,9 +164,6 @@ class NDBMedicine:
             if condition_medical_class and medical_class not in condition_medical_class:
                 continue
 
-            # null記号の置換
-            df = df.mask(df == '-')
-
             # 列の追加：第2回まで、単位がないので空欄を代入
             if '単位' not in df.columns:
                 df.insert(4, '単位', np.nan)
@@ -177,13 +174,17 @@ class NDBMedicine:
             if file_link.method == '都道府県別':
                 df = self._transform_pref(df)
 
+            # 最小集計単位未満のセルの置換
+            df['最小集計単位未満'] = (df['処方数量'] == '-').astype(np.int8)
+            df['処方数量'] = df['処方数量'].mask(df['処方数量'] == '-').fillna('0')
+
             # 列の追加
             cols = df.columns.to_list()
             df['実施回'] = file_link.nth
             df['年度'] = file_link.nth + 2013
             df['剤形'] = file_link.dosage
             df['診療区分'] = medical_class
-            df = df[['実施回', '年度', '剤形', '診療区分'] + cols].astype({'実施回': np.int8, '年度': np.int16})
+            df = df[['実施回', '年度', '剤形', '診療区分'] + cols].astype({'実施回': np.int8, '年度': np.int16, '処方数量': float})
 
             concat_df = pd.concat([concat_df, df], axis=0)
 
@@ -224,12 +225,12 @@ class NDBMedicine:
             .stack()
             .reset_index()
         )
-        df.columns = cols + ['年齢区間', '量']
+        df.columns = cols + ['年齢区間', '処方数量']
 
         # 年齢下限の追加
         def ufunc(s):
             return int(re.search(r"^\d+", s).group(0))
-        df = df.assign(年齢 = lambda d: d['年齢区間'].apply(ufunc))[cols + ['年齢', '年齢区間', '量']]
+        df = df.assign(年齢 = lambda d: d['年齢区間'].apply(ufunc))[cols + ['年齢', '年齢区間', '処方数量']]
 
         return df
 
@@ -259,10 +260,10 @@ class NDBMedicine:
             .stack()
             .reset_index()
         )
-        df.columns = cols + ['都道府県コード', '量']
+        df.columns = cols + ['都道府県コード', '処方数量']
 
         # 県名の追加
-        df = df.merge(prefs)[cols + ['都道府県コード', '都道府県名', '量']]
+        df = df.merge(prefs)[cols + ['都道府県コード', '都道府県名', '処方数量']]
 
         return df
 
