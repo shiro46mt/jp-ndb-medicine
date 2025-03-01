@@ -65,6 +65,7 @@ class NDBMedicine:
     # 厚労省HPのスクレイピング
     #
     def _get_page_links(self):
+        """各回のページへのリンクを取得"""
         r = requests.get(url_top, headers=headers, timeout=timeout_sec)
         if r.status_code != 200:
             raise Exception(r.status_code)
@@ -80,6 +81,7 @@ class NDBMedicine:
             self.page_links[n] = link
 
     def _get_file_links(self, nth: int):
+        """Excelファイルのリンクを取得"""
         assert nth in self.page_links
 
         page_url = self.page_links[nth]
@@ -148,12 +150,13 @@ class NDBMedicine:
     #
     # Excelファイルのデータの読み込み・変換
     #
-    def _read_file(self, file_link: _FileLink, condition_medical_class=None) -> pd.DataFrame:
+    def _read_file(self, file_link: _FileLink, condition_medical_class=None, include_total: bool = False) -> pd.DataFrame:
         """対象ファイルを厚労省HPから読み込み -> 縦持ちに変換"""
         # 読み込み
         data = {}
-        logger.info(f"Downloading '{file_link}' from '{file_link.url}'")
-        dfs = pd.read_excel(file_link.url, header=2, sheet_name=None)
+        if file_link.url.startswith('http'):
+            logger.info(f"Downloading '{file_link}' from '{file_link.url}'")
+        dfs = pd.read_excel(file_link.url, header=[2,3], sheet_name=None, dtype=str)
         for sheet_name, df in dfs.items():
             medical_class = _search(self.medical_class_values, re.sub(r'\s*\(', '（', re.sub(r'\)', '）', sheet_name)))
             data[medical_class] = df
@@ -164,111 +167,88 @@ class NDBMedicine:
             if condition_medical_class and medical_class not in condition_medical_class:
                 continue
 
-            # 列の追加：第2回まで、単位がないので空欄を代入
-            if '単位' not in df.columns:
-                df.insert(4, '単位', np.nan)
+            df = self._transform(df, file_link, medical_class)
 
-            # 変換
-            if file_link.method == '性年齢別':
-                df = self._transform_age(df)
-            if file_link.method == '都道府県別':
-                df = self._transform_pref(df)
-
-            # 最小集計単位未満のセルの置換
-            df['最小集計単位未満'] = (df['処方数量'] == '-').astype(np.int8)
-            df['処方数量'] = df['処方数量'].mask(df['処方数量'] == '-').fillna('0')
-
-            # 列の追加
-            cols = df.columns.to_list()
-            df['実施回'] = file_link.nth
-            df['年度'] = file_link.nth + 2013
-            df['剤形'] = file_link.dosage
-            df['診療区分'] = medical_class
-            df = df[['実施回', '年度', '剤形', '診療区分'] + cols].astype({'実施回': np.int8, '年度': np.int16, '処方数量': float})
+            # 総計行の除外
+            if not include_total:
+                if file_link.method == '性年齢別':
+                    df = df[df['性別'] != '総計']
+                elif file_link.method == '都道府県別':
+                    df = df[df['都道府県名'] != '総計']
 
             concat_df = pd.concat([concat_df, df], axis=0)
 
         return concat_df
 
-    def _transform_age(self, df: pd.DataFrame) -> pd.DataFrame:
-        # 年齢のリスト
-        ages = df.iloc[0].dropna().drop_duplicates().to_list()
+    def _transform(self, df: pd.DataFrame, file_link: _FileLink, medical_class: str) -> pd.DataFrame:
+        # 列の追加：第2回まで、単位がないので空欄を代入
+        if '単位' not in df.columns:
+            df.insert(4, '単位', np.nan)
 
-        # 不要行・列の削除
-        c_total = [c for c in df.columns if c.startswith('総計')][0]
-        df = df.drop(columns=c_total).iloc[1:]
-
-        # 男女の区別
-        n = len(self.index_cols)
-        df_m = df.iloc[:, np.r_[0:n, n:n+len(ages)]].copy()
-        df_m.columns = self.index_cols + ages
-        df_m['性別'] = '男性'
-
-        df_w = df.iloc[:, np.r_[0:n, n+len(ages):n+2*len(ages)]].copy()
-        df_w.columns = self.index_cols + ages
-        df_w['性別'] = '女性'
-
-        # 結合
-        df = pd.concat([df_m, df_w], axis=0)
+        # 列名の編集
+        df.columns = self.index_cols + [('総計', '総計')] + df.columns.to_list()[len(self.index_cols)+1:]
 
         # nan埋め
         df[['薬効分類','薬効分類名称']] = df[['薬効分類','薬効分類名称']].ffill()
 
-        # データ型の変換
-        df['後発品区分'] = df['後発品区分'].astype(np.int8)
-        df[['薬効分類','医薬品コード']] = df[['薬効分類','医薬品コード']].astype(int).astype(str)
-
         # 縦持ちに変換
-        cols = self.index_cols + ['性別']
         df = (
-            df.set_index(cols)
+            df.set_index(self.index_cols)
             .stack()
             .reset_index()
         )
-        df.columns = cols + ['年齢区間', '処方数量']
+        df.columns = self.index_cols + ['集計単位', '処方数量']
 
-        # 年齢下限の追加
-        def ufunc(s):
-            return int(re.search(r"^\d+", s).group(0))
-        df = df.assign(年齢 = lambda d: d['年齢区間'].apply(ufunc))[cols + ['年齢', '年齢区間', '処方数量']]
+        # 集計方法ごとの処理: 性年齢別
+        if file_link.method == '性年齢別':
+            df[['性別', '年齢区間']] = df['集計単位'].to_list()
 
-        return df
+            # 性別の表記揺らぎを矯正
+            df['性別'] = df['性別'].str.replace('性', '')
 
-    def _transform_pref(self, df: pd.DataFrame) -> pd.DataFrame:
-        # 都道府県のリスト
-        prefs = df.iloc[0].dropna().reset_index()
-        prefs.columns = ['都道府県コード', '都道府県名']
+            # 年齢下限の追加
+            def ufunc(s):
+                if s == '総計':
+                    return -1
+                return int(re.search(r"^\d+", s).group(0))
+            df = df.assign(年齢 = lambda d: d['年齢区間'].apply(ufunc))
 
-        # 不要行・列の削除
-        c_total = [c for c in df.columns if c.startswith('総計')][0]
-        df = df.drop(columns=c_total).iloc[1:]
+            df = df[self.index_cols + ['性別', '年齢', '年齢区間', '処方数量']]
 
-        # 列名の変換
-        df.columns = [c.replace('\n', '') for c in df.columns]
+        # 集計方法ごとの処理: 都道府県別
+        elif file_link.method == '都道府県別':
+            df[['都道府県コード', '都道府県名']] = df['集計単位'].to_list()
 
-        # nan埋め
-        df[['薬効分類','薬効分類名称']] = df[['薬効分類','薬効分類名称']].ffill()
+            # 総計行の都道府県コードの編集
+            df['都道府県コード'] = df['都道府県コード'].mask(df['都道府県コード'] == '総計', '00')
+
+            df = df[self.index_cols + ['都道府県コード', '都道府県名', '処方数量']]
+
+        # 最小集計単位未満のセルの置換
+        df['最小集計単位未満'] = (df['処方数量'] == '-').astype(np.int8)
+        df['処方数量'] = df['処方数量'].mask(df['処方数量'] == '-').fillna('0')
+
+        # 列の追加
+        cols = df.columns.to_list()
+        df['実施回'] = file_link.nth
+        df['年度'] = file_link.nth + 2013
+        df['剤形'] = file_link.dosage
+        df['診療区分'] = medical_class
+        df = df[['実施回', '年度', '剤形', '診療区分'] + cols]
 
         # データ型の変換
-        df['後発品区分'] = df['後発品区分'].astype(np.int8)
-        df[['薬効分類','医薬品コード']] = df[['薬効分類','医薬品コード']].astype(int).astype(str)
-
-        # 縦持ちに変換
-        cols = self.index_cols
-        df = (
-            df.set_index(cols)
-            .stack()
-            .reset_index()
-        )
-        df.columns = cols + ['都道府県コード', '処方数量']
-
-        # 県名の追加
-        df = df.merge(prefs)[cols + ['都道府県コード', '都道府県名', '処方数量']]
+        df = df.astype({
+            '実施回': np.int8,
+            '年度': np.int16,
+            '後発品区分': np.int8,
+            '薬価': float,
+            '処方数量': float,
+        })
 
         return df
 
     #
-    # メイン処理
+    # メイン処理の内部関数
     #
     def _filter_file_links(self, nth, year, dosage, medical_class, method):
         file_links = [f for f in self.file_links]
@@ -314,6 +294,7 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            include_total: bool = False,
             progress_bar=True) -> pd.DataFrame:
         """厚労省HPから、NDBオープンデータの処方薬のExcelファイルをダウンロードして読み込み、縦持ちに変換する。
             抽出条件は単一の値または複数の配列で指定可能。
@@ -325,6 +306,9 @@ class NDBMedicine:
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
+            include_total (bool, Defaults `False`): `True`の場合、成分ごとの総計行を含める。
+                総計行では便宜上、`年齢`=-1、`都道府県コード`='00'としている。
+                ※総計行は元データの総計の列の値を使用しており、最小集計単位未満の値も含まれるため明細の単純合計と一致しない場合がある。
             progress_bar (bool, Defaults `True`): `True`の場合、ダウンロードの進捗状況を表示する。
 
         Return:
@@ -335,11 +319,14 @@ class NDBMedicine:
 
         download_df = []
         for file_link in tqdm(file_links, desc='Downloading...', disable=not progress_bar):
-            df = self._read_file(file_link, condition_medical_class=medical_class)
+            df = self._read_file(file_link, condition_medical_class=medical_class, include_total=include_total)
             download_df.append(df)
 
         return pd.concat(download_df, axis=0)
 
+    #
+    # メイン処理
+    #
     def load_age(
             self,
             *,
@@ -347,7 +334,9 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            progress_bar=True) -> pd.DataFrame:
+            include_total: bool = False,
+            progress_bar=True,
+        ) -> pd.DataFrame:
         """厚労省HPから、NDBオープンデータの処方薬のExcelファイル【性年齢別】をダウンロードして読み込み、縦持ちに変換する。
             抽出条件は単一の値または複数の配列で指定可能。
             例）`nth=1` , `nth=[1,2,3]`
@@ -357,12 +346,15 @@ class NDBMedicine:
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
+            include_total (bool, Defaults `False`): `True`の場合、成分ごとの総計行を含める。
+                総計行では便宜上 `年齢`=-1、`都道府県コード`='00'としている。
+                ※総計行は元データの総計の列の値を使用しており、最小集計単位未満の値も含まれるため明細の単純合計と一致しない場合がある。
             progress_bar (bool, Defaults `True`): `True`の場合、ダウンロードの進捗状況を表示する。
 
         Return:
             `pd.DataFrame`
         """
-        return self._load('性年齢別', nth=nth, year=year, dosage=dosage, medical_class=medical_class, progress_bar=progress_bar)
+        return self._load('性年齢別', nth=nth, year=year, dosage=dosage, medical_class=medical_class, include_total=include_total, progress_bar=progress_bar)
 
     def load_pref(
             self,
@@ -371,7 +363,9 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            progress_bar=True) -> pd.DataFrame:
+            include_total: bool = False,
+            progress_bar=True,
+        ) -> pd.DataFrame:
         """厚労省HPから、NDBオープンデータの処方薬のExcelファイル【都道府県別】をダウンロードして読み込み、縦持ちに変換する。
             抽出条件は単一の値または複数の配列で指定可能。
             例）`nth=1` , `nth=[1,2,3]`
@@ -381,12 +375,15 @@ class NDBMedicine:
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
+            include_total (bool, Defaults `False`): `True`の場合、成分ごとの総計行を含める。
+                総計行では便宜上、`年齢`=-1、`都道府県コード`='00'としている。
+                ※総計行は元データの総計の列の値を使用しており、最小集計単位未満の値も含まれるため明細の単純合計と一致しない場合がある。
             progress_bar (bool, Defaults `True`): `True`の場合、ダウンロードの進捗状況を表示する。
 
         Return:
             `pd.DataFrame`
         """
-        return self._load('都道府県別', nth=nth, year=year, dosage=dosage, medical_class=medical_class, progress_bar=progress_bar)
+        return self._load('都道府県別', nth=nth, year=year, dosage=dosage, medical_class=medical_class, include_total=include_total, progress_bar=progress_bar)
 
     def save(
             self,
@@ -427,7 +424,9 @@ class NDBMedicine:
     def read_excel(
             self,
             filepath: Union[str, os.PathLike],
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None
+            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            *,
+            include_total: bool = False,
         )  -> pd.DataFrame:
         """ローカルに保存されたNDBオープンデータの処方薬のExcelファイルを読み込み、縦持ちに変換する。
             抽出条件は単一の値または複数の配列で指定可能。
@@ -436,6 +435,9 @@ class NDBMedicine:
         Args:
             filepath: 読み込み元のExcelファイル。ファイル名は`"{nth}_{dosage}_{medical_class}_{method}.xlsx"` の形式が必要。
             medical_class: 診療区分。単一の値または複数の配列で指定可能。指定しない場合、すべてのシートを読み込む。
+            include_total (bool, Defaults `False`): `True`の場合、成分ごとの総計行を含める。
+                総計行では便宜上、`年齢`=-1、`都道府県コード`='00'としている。
+                ※総計行は元データの総計の列の値を使用しており、最小集計単位未満の値も含まれるため明細の単純合計と一致しない場合がある。
 
         Return:
             `pd.DataFrame`
@@ -457,4 +459,4 @@ class NDBMedicine:
         file_link = _FileLink(int(nth), dosage, medical_class_, method, url=str(filepath))
 
         # ファイルの読み込み
-        return self._read_file(file_link, condition_medical_class=medical_class)
+        return self._read_file(file_link, condition_medical_class=medical_class, include_total=include_total)
