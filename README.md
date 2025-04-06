@@ -14,7 +14,7 @@ pip install jp-ndb-medicine
 ```
 
 # 使用例
-```
+```python
 from jp_ndb_medicine import NDBMedicine
 ndbm = NDBMedicine()
 ```
@@ -28,7 +28,7 @@ ndbm = NDBMedicine()
 * `dosage`: 内服 / 外用 / 注射 / 歯科用薬剤
 * `medical_class_values`: 外来（院内） / 外来（院外） / 入院
 
-```
+```python
 df = ndbm.load_age()                            # 利用可能なすべてのデータ
 df = ndbm.load_age(nth=[1, 2])                  # 第1,2回
 df = ndbm.load_age(year=2014)                   # 2014年度
@@ -77,7 +77,7 @@ df = ndbm.load_age(nth=1, dosage=['内服', '外用'], medical_class='入院')  
 
 抽出条件は読み込む場合を参照。
 
-```
+```python
 save_dir = '/path/to/directory'
 filepaths = ndbm.save(save_dir)                     # 利用可能なすべてのデータ
 filepaths = ndbm.save(save_dir, method='性年齢別')   # 性年齢別のみ
@@ -85,7 +85,7 @@ print(filepaths)  # ['/path/to/directory/01_内服_外来（院内）_性年齢�
 ```
 
 ## ローカルに保存したExcelファイルを縦持ち形式で読み込む
-```
+```python
 filepath = '/path/to/directory/01_内服_外来（院内）_性年齢別.xlsx'
 df = ndbm.read_excel(filepath)
 ```
