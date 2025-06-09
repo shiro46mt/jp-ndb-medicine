@@ -30,7 +30,7 @@ def _search(keywords, text, default=''):
     return found_keywords[0]
 
 
-class _FileLink(NamedTuple):
+class FileInfo(NamedTuple):
     nth: int
     dosage: str
     medical_class: str
@@ -38,7 +38,7 @@ class _FileLink(NamedTuple):
     url: str
 
     def __str__(self):
-        return f"{self.nth:0>2d}_{self.dosage}_{self.medical_class}_{self.method}"
+        return f"{self.nth:0>2d}【{self.dosage}】{self.medical_class}_{self.method}薬効分類別数量"
 
 
 class NDBMedicine:
@@ -50,7 +50,7 @@ class NDBMedicine:
 
     def __init__(self):
         self.page_links = dict()
-        self.file_links = []
+        self.fileinfo_list = []
         # 各回のページへのリンク
         try:
             self._get_page_links()
@@ -58,7 +58,7 @@ class NDBMedicine:
             logger.warning('NDBオープンデータのページにアクセスできません。')
         # Excelファイルのリンク
         for nth in self.page_links:
-            self._get_file_links(nth)
+            self._get_fileinfos(nth)
             time.sleep(interval_sec)
 
     #
@@ -80,7 +80,7 @@ class NDBMedicine:
                 link = domain_mhlw + link
             self.page_links[n] = link
 
-    def _get_file_links(self, nth: int):
+    def _get_fileinfos(self, nth: int):
         """Excelファイルのリンクを取得"""
         assert nth in self.page_links
 
@@ -123,10 +123,10 @@ class NDBMedicine:
                 link = tag.attrs['href']
                 if link.startswith('/'):
                     link = domain_mhlw + link
-                self.file_links.append(
-                    _FileLink(nth, dosage, medical_class, method, link))
+                self.fileinfo_list.append(
+                    FileInfo(nth, dosage, medical_class, method, link))
 
-    def _get_file(self, file_link: _FileLink, save_dir: Union[str, os.PathLike]) -> Path:
+    def _get_file(self, fileinfo: FileInfo, save_dir: Union[str, os.PathLike]) -> Path:
         """download_urlのファイルをダウンロード -> ファイルを保存 -> ファイルパスを返す"""
         # 保存先フォルダ
         if isinstance(save_dir, str):
@@ -136,12 +136,12 @@ class NDBMedicine:
             raise FileNotFoundError("No such directory: '%s'", save_dir)
 
         # ダウンロードファイルの名前
-        filename = f"{file_link}.xlsx"
+        filename = f"{fileinfo}.xlsx"
         filepath = save_dir / filename
 
         # ファイルダウンロード
-        logger.info(f"Downloading '{filename}' from '{file_link.url}'")
-        r = requests.get(file_link.url, stream=True)
+        logger.info(f"Downloading '{filename}' from '{fileinfo.url}'")
+        r = requests.get(fileinfo.url, stream=True)
         with open(filepath, 'wb') as zf:
             zf.write(r.content)
 
@@ -150,13 +150,21 @@ class NDBMedicine:
     #
     # Excelファイルのデータの読み込み・変換
     #
-    def _read_file(self, file_link: _FileLink, condition_medical_class=None, include_total: bool = False) -> pd.DataFrame:
+    def _parse_to_fileinfo(self, filepath: Path) -> FileInfo:
+        """標準のファイル名を_FileLinkに変換"""
+        mob = re.match(f"(\d\d)?【({'|'.join(self.dosage_values)})】({'|'.join(self.medical_class_values)})?_({'|'.join(self.method_values)})薬効分類別数量(_(医科|歯科))?", filepath.stem)
+        if mob:
+            return FileInfo(nth=mob.group(1), dosage=mob.group(2), medical_class=mob.group(3), method=mob.group(4), url=str(filepath))
+        else:
+            return None
+
+    def _read_file(self, fileinfo: FileInfo, condition_medical_class=None, include_total: bool = False) -> pd.DataFrame:
         """対象ファイルを厚労省HPから読み込み -> 縦持ちに変換"""
         # 読み込み
         data = {}
-        if file_link.url.startswith('http'):
-            logger.info(f"Downloading '{file_link}' from '{file_link.url}'")
-        dfs = pd.read_excel(file_link.url, header=[2,3], sheet_name=None, dtype=str)
+        if fileinfo.url.startswith('http'):
+            logger.info(f"Downloading '{fileinfo}' from '{fileinfo.url}'")
+        dfs = pd.read_excel(fileinfo.url, header=[2,3], sheet_name=None, dtype=str)
         for sheet_name, df in dfs.items():
             medical_class = _search(self.medical_class_values, re.sub(r'\s*\(', '（', re.sub(r'\)', '）', sheet_name)))
             data[medical_class] = df
@@ -167,20 +175,20 @@ class NDBMedicine:
             if condition_medical_class and medical_class not in condition_medical_class:
                 continue
 
-            df = self._transform(df, file_link, medical_class)
+            df = self._transform(df, fileinfo, medical_class)
 
             # 総計行の除外
             if not include_total:
-                if file_link.method == '性年齢別':
+                if fileinfo.method == '性年齢別':
                     df = df[df['性別'] != '総計']
-                elif file_link.method == '都道府県別':
+                elif fileinfo.method == '都道府県別':
                     df = df[df['都道府県名'] != '総計']
 
             concat_df = pd.concat([concat_df, df], axis=0)
 
         return concat_df
 
-    def _transform(self, df: pd.DataFrame, file_link: _FileLink, medical_class: str) -> pd.DataFrame:
+    def _transform(self, df: pd.DataFrame, fileinfo: FileInfo, medical_class: str) -> pd.DataFrame:
         # 列の追加：第2回まで、単位がないので空欄を代入
         if '単位' not in df.columns:
             df.insert(4, '単位', np.nan)
@@ -200,7 +208,7 @@ class NDBMedicine:
         df.columns = self.index_cols + ['集計単位', '処方数量']
 
         # 集計方法ごとの処理: 性年齢別
-        if file_link.method == '性年齢別':
+        if fileinfo.method == '性年齢別':
             df[['性別', '年齢区間']] = df['集計単位'].to_list()
 
             # 性別の表記揺らぎを矯正
@@ -216,7 +224,7 @@ class NDBMedicine:
             df = df[self.index_cols + ['性別', '年齢', '年齢区間', '処方数量']]
 
         # 集計方法ごとの処理: 都道府県別
-        elif file_link.method == '都道府県別':
+        elif fileinfo.method == '都道府県別':
             df[['都道府県コード', '都道府県名']] = df['集計単位'].to_list()
 
             # 総計行の都道府県コードの編集
@@ -230,9 +238,9 @@ class NDBMedicine:
 
         # 列の追加
         cols = df.columns.to_list()
-        df['実施回'] = file_link.nth
-        df['年度'] = file_link.nth + 2013
-        df['剤形'] = file_link.dosage
+        df['実施回'] = fileinfo.nth
+        df['年度'] = fileinfo.nth + 2013
+        df['剤形'] = fileinfo.dosage
         df['診療区分'] = medical_class
         df = df[['実施回', '年度', '剤形', '診療区分'] + cols]
 
@@ -250,41 +258,41 @@ class NDBMedicine:
     #
     # メイン処理の内部関数
     #
-    def _filter_file_links(self, nth, year, dosage, medical_class, method):
-        file_links = [f for f in self.file_links]
+    def _filter_files(self, nth, year, dosage, medical_class, method):
+        files = [f for f in self.fileinfo_list]
 
         if nth:
             if isinstance(nth, int):
-                file_links = [f for f in file_links if f.nth == nth]
+                files = [f for f in files if f.nth == nth]
             else:
-                file_links = [f for f in file_links if f.nth in nth]
+                files = [f for f in files if f.nth in nth]
 
         elif year:
             if isinstance(year, int):
-                file_links = [f for f in file_links if f.nth == year - 2013]
+                files = [f for f in files if f.nth == year - 2013]
             else:
                 nths = [y - 2013 for y in year]
-                file_links = [f for f in file_links if f.nth in nths]
+                files = [f for f in files if f.nth in nths]
 
         if dosage:
             if isinstance(dosage, str):
-                file_links = [f for f in file_links if f.dosage == dosage]
+                files = [f for f in files if f.dosage == dosage]
             else:
-                file_links = [f for f in file_links if f.dosage in dosage]
+                files = [f for f in files if f.dosage in dosage]
 
         if medical_class:
             if isinstance(medical_class, str):
-                file_links = [f for f in file_links if (f.medical_class == medical_class) or (f.medical_class == self.medical_class_default_value)]
+                files = [f for f in files if (f.medical_class == medical_class) or (f.medical_class == self.medical_class_default_value)]
             else:
-                file_links = [f for f in file_links if (f.medical_class in medical_class) or (f.medical_class == self.medical_class_default_value)]
+                files = [f for f in files if (f.medical_class in medical_class) or (f.medical_class == self.medical_class_default_value)]
 
         if method:
             if isinstance(method, str):
-                file_links = [f for f in file_links if f.method == method]
+                files = [f for f in files if f.method == method]
             else:
-                file_links = [f for f in file_links if f.method in method]
+                files = [f for f in files if f.method in method]
 
-        return file_links
+        return files
 
     def _load(
             self,
@@ -314,12 +322,12 @@ class NDBMedicine:
         Return:
             `pd.DataFrame`
         """
-        assert method in ['性年齢別', '都道府県別']
-        file_links = self._filter_file_links(nth, year, dosage, medical_class, method)
+        assert method in self.method_values
+        files = self._filter_files(nth, year, dosage, medical_class, method)
 
         download_df = []
-        for file_link in tqdm(file_links, desc='Downloading...', disable=not progress_bar):
-            df = self._read_file(file_link, condition_medical_class=medical_class, include_total=include_total)
+        for fileinfo in tqdm(files, desc='Downloading...', disable=not progress_bar):
+            df = self._read_file(fileinfo, condition_medical_class=medical_class, include_total=include_total)
             download_df.append(df)
 
         return pd.concat(download_df, axis=0)
@@ -411,11 +419,11 @@ class NDBMedicine:
         Return:
             保存先ファイルパス (str) のリスト
         """
-        file_links = self._filter_file_links(nth, year, dosage, medical_class, method)
+        fileinfos = self._filter_files(nth, year, dosage, medical_class, method)
 
         download_files = []
-        for file_link in tqdm(file_links, desc='Downloading...', disable=not progress_bar):
-            filepath = self._get_file(file_link, save_dir)
+        for fileinfo in tqdm(fileinfos, desc='Downloading...', disable=not progress_bar):
+            filepath = self._get_file(fileinfo, save_dir)
             download_files.append(str(filepath))
             time.sleep(interval_sec)
 
@@ -433,7 +441,7 @@ class NDBMedicine:
             例）`nth=1` , `nth=[1,2,3]`
 
         Args:
-            filepath: 読み込み元のExcelファイル。ファイル名は`"{nth}_{dosage}_{medical_class}_{method}.xlsx"` の形式が必要。
+            filepath: 読み込み元のExcelファイル。ファイル名は`"{nth}【{dosage}】{medical_class}_{method}薬効分類別数量.xlsx"` の形式が必要。
             medical_class: 診療区分。単一の値または複数の配列で指定可能。指定しない場合、すべてのシートを読み込む。
             include_total (bool, Defaults `False`): `True`の場合、成分ごとの総計行を含める。
                 総計行では便宜上、`年齢`=-1、`都道府県コード`='00'としている。
@@ -450,13 +458,8 @@ class NDBMedicine:
             raise FileNotFoundError("No such directory: '%s'", filepath.parent)
 
         # ファイル名の解析
-        nth, dosage, medical_class_, method = filepath.stem.split('_')
-        assert int(nth) > 0, f"ファイル名が不正です。'{filepath.name}'"
-        assert dosage in self.dosage_values, f"ファイル名が不正です。'{filepath.name}'"
-        assert (medical_class_ in self.medical_class_values) or (medical_class_ == ''), f"ファイル名が不正です。'{filepath.name}'"
-        assert method in self.method_values, f"ファイル名が不正です。'{filepath.name}'"
-
-        file_link = _FileLink(int(nth), dosage, medical_class_, method, url=str(filepath))
+        fileinfo = self._parse_to_fileinfo(filepath)
+        assert fileinfo, f"ファイル名が不正です。'{filepath.name}'"
 
         # ファイルの読み込み
-        return self._read_file(file_link, condition_medical_class=medical_class, include_total=include_total)
+        return self._read_file(fileinfo, condition_medical_class=medical_class, include_total=include_total)
