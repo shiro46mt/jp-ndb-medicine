@@ -45,7 +45,7 @@ class NDBMedicine:
     dosage_values = ('内服', '外用', '注射', '歯科用薬剤')
     medical_class_values = ('外来（院内）', '外来（院外）', '入院')
     medical_class_default_value = ''
-    method_values = ('性年齢別', '都道府県別')
+    method_values = ('性年齢別', '都道府県別', '診療月別')
     index_cols = ['薬効分類', '薬効分類名称', '医薬品コード', '医薬品名', '単位', '薬価基準収載医薬品コード', '薬価', '後発品区分']
 
     def __init__(self):
@@ -152,7 +152,7 @@ class NDBMedicine:
     #
     def _parse_to_fileinfo(self, filepath: Path) -> FileInfo:
         """標準のファイル名を_FileLinkに変換"""
-        mob = re.match(f"(\d\d)?【({'|'.join(self.dosage_values)})】({'|'.join(self.medical_class_values)})?_({'|'.join(self.method_values)})薬効分類別数量(_(医科|歯科))?", filepath.stem)
+        mob = re.match(rf"(\d\d)?【({'|'.join(self.dosage_values)})】({'|'.join(self.medical_class_values)})?_({'|'.join(self.method_values)})薬効分類別数量(_(医科|歯科))?", filepath.stem)
         if mob:
             return FileInfo(nth=mob.group(1), dosage=mob.group(2), medical_class=mob.group(3), method=mob.group(4), url=str(filepath))
         else:
@@ -183,6 +183,8 @@ class NDBMedicine:
                     df = df[df['性別'] != '総計']
                 elif fileinfo.method == '都道府県別':
                     df = df[df['都道府県名'] != '総計']
+                elif fileinfo.method == '診療月別':
+                    df = df[df['診療月'] != '総計']
 
             concat_df = pd.concat([concat_df, df], axis=0)
 
@@ -231,6 +233,24 @@ class NDBMedicine:
             df['都道府県コード'] = df['都道府県コード'].mask(df['都道府県コード'] == '総計', '00')
 
             df = df[self.index_cols + ['都道府県コード', '都道府県名', '処方数量']]
+
+        # 集計方法ごとの処理: 診療月別
+        elif fileinfo.method == '診療月別':
+            df[['診療月', '診療年月']] = df['集計単位'].to_list()
+
+            # 診療年月の設定
+            def ufunc(month):
+                if month == '総計':
+                    return '総計'
+                year = fileinfo.nth + 2013
+                month = int(month[:-1])
+                if month < 4:
+                    return f'{year+1:0>4d}/{month:0>2d}'
+                else:
+                    return f'{year:0>4d}/{month:0>2d}'
+            df['診療年月'] = df['診療月'].apply(ufunc)
+
+            df = df[self.index_cols + ['診療月', '診療年月', '処方数量']]
 
         # 最小集計単位未満のセルの置換
         df['最小集計単位未満'] = (df['処方数量'] == '-').astype(np.int8)
@@ -296,7 +316,7 @@ class NDBMedicine:
 
     def _load(
             self,
-            method: Literal['性年齢別', '都道府県別'],
+            method: Literal['性年齢別', '都道府県別', '診療月別'],
             *,
             nth: Union[int, List[int], None] = None,
             year: Union[int, List[int], None] = None,
@@ -324,6 +344,10 @@ class NDBMedicine:
         """
         assert method in self.method_values
         files = self._filter_files(nth, year, dosage, medical_class, method)
+
+        if len(files) == 0:
+            logger.warning('条件に一致するファイルが見つかりません。')
+            return None
 
         download_df = []
         for fileinfo in tqdm(files, desc='Downloading...', disable=not progress_bar):
@@ -393,6 +417,37 @@ class NDBMedicine:
         """
         return self._load('都道府県別', nth=nth, year=year, dosage=dosage, medical_class=medical_class, include_total=include_total, progress_bar=progress_bar)
 
+    def load_month(
+            self,
+            *,
+            nth: Union[int, List[int], None] = None,
+            year: Union[int, List[int], None] = None,
+            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
+            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            include_total: bool = False,
+            progress_bar=True,
+        ) -> pd.DataFrame:
+        """厚労省HPから、NDBオープンデータの処方薬のExcelファイル【診療月別】をダウンロードして読み込み、縦持ちに変換する。
+            抽出条件は単一の値または複数の配列で指定可能。
+            例）`nth=1` , `nth=[1,2,3]`
+
+            ※【診療月別】は第10回（2023年度）以降のみ。また、歯科用薬剤は対象外。
+
+        Args:
+            nth: 実施回。
+            year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
+            dosage: 剤形。
+            medical_class: 診療区分。
+            include_total (bool, Defaults `False`): `True`の場合、成分ごとの総計行を含める。
+                総計行では便宜上、`年齢`=-1、`都道府県コード`='00'としている。
+                ※総計行は元データの総計の列の値を使用しており、最小集計単位未満の値も含まれるため明細の単純合計と一致しない場合がある。
+            progress_bar (bool, Defaults `True`): `True`の場合、ダウンロードの進捗状況を表示する。
+
+        Return:
+            `pd.DataFrame`
+        """
+        return self._load('診療月別', nth=nth, year=year, dosage=dosage, medical_class=medical_class, include_total=include_total, progress_bar=progress_bar)
+
     def save(
             self,
             save_dir: Union[str, os.PathLike],
@@ -401,7 +456,7 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            method: Union[Literal['性年齢別', '都道府県別'], List[Literal['性年齢別', '都道府県別']], None] = None,
+            method: Union[Literal['性年齢別', '都道府県別', '診療月別'], List[Literal['性年齢別', '都道府県別', '診療月別']], None] = None,
             progress_bar=True) -> List[str]:
         """厚労省HPから、NDBオープンデータの処方薬のExcelファイルをダウンロードして保存する。
             抽出条件は単一の値または複数の配列で指定可能。

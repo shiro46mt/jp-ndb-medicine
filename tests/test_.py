@@ -42,3 +42,28 @@ def test_load_pref_total(ndbm):
     df = ndbm.load_pref(nth=[1, 2], dosage=['内服', '注射'], medical_class=['外来（院内）', '外来（院外）'], include_total=True)
 
     assert df['都道府県コード'].nunique() == 48
+
+
+def test_load_month(ndbm):
+    df = ndbm.load_month(nth=10, dosage=['内服', '注射'], medical_class=['外来（院内）', '外来（院外）'])
+
+    assert df.columns.to_list() == index_cols + ['診療月', '診療年月'] + value_cols
+
+    assert set(df['実施回'].unique()) == set([10])
+    assert set(df['剤形'].unique()) == set(['内服', '注射'])
+    assert set(df['診療区分'].unique()) == set(['外来（院内）', '外来（院外）'])
+    assert df['診療月'].nunique() == 12
+    assert df['診療年月'].nunique() == 12
+
+
+def test_load_month_total(ndbm):
+    df = ndbm.load_month(nth=10, dosage=['内服', '注射'], medical_class=['外来（院内）', '外来（院外）'], include_total=True)
+
+    assert df['診療月'].nunique() == 13
+    assert df['診療年月'].nunique() == 13
+
+
+def test_load_month_old(ndbm):
+    df = ndbm.load_month(nth=list(range(1, 10)), dosage=['内服', '注射'], medical_class=['外来（院内）', '外来（院外）'], include_total=True)
+
+    assert df is None
