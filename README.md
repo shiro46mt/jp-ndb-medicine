@@ -4,7 +4,7 @@
 [![PyPI Downloads](https://static.pepy.tech/badge/jp-ndb-medicine)](https://pepy.tech/projects/jp-ndb-medicine)
 
 # jp-ndb-medicine
-NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのライブラリ
+NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのpythonライブラリ
 
 NDBオープンデータについての詳細は[厚生労働省HP](https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/0000177182.html)を参照。
 
