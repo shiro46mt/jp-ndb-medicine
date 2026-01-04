@@ -1,7 +1,7 @@
 [project]
 name = "jp_ndb_medicine"
 version = "1.1.1"
-description = "NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのpythonライブラリ"
+description = "NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのライブラリ"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
