@@ -27,3 +27,8 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/shiro46mt/jp-ndb-medicine.git"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
