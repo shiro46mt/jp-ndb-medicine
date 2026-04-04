@@ -95,6 +95,7 @@ class NDBMedicine:
     #
     def _filter_files(
             self,
+            fileinfos: Optional[List[FileInfo]] = None,
             nth: Union[int, List[int], None] = None,
             year: Union[int, List[int], None] = None,
             dosage: Union[str, List[str], None] = None,
@@ -102,7 +103,10 @@ class NDBMedicine:
             method: Union[str, List[str], None] = None
     ) -> List[FileInfo]:
         """条件に合致するファイル情報をフィルタリング"""
-        files = self.fileinfo_list.copy()
+        if fileinfos is None:
+            files = self.fileinfo_list.copy()
+        else:
+            files = fileinfos.copy()
         available_nths = sorted(set(f.nth for f in files if f.nth is not None))
 
         def resolve_nth(n: int) -> int:
@@ -143,6 +147,35 @@ class NDBMedicine:
         return files
 
     #
+    # データ読み込み（ヘルパー）
+    #
+    def _read_files(
+            self,
+            files: List[FileInfo],
+            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None],
+            include_total: bool,
+            progress_bar: bool,
+            desc: str = 'Loading...'
+    ) -> Optional[pd.DataFrame]:
+        """ファイル情報を基にデータを読み込み・結合"""
+        dfs = []
+        for fileinfo in tqdm(files, desc=desc, disable=not progress_bar):
+            try:
+                df = self.transformer.read_file(
+                    fileinfo,
+                    condition_medical_class=medical_class,
+                    include_total=include_total
+                )
+                dfs.append(df)
+            except Exception as e:
+                logger.error(f'ファイルの読み込みに失敗: {fileinfo.url} - {e}')
+
+        if not dfs:
+            return None
+
+        return pd.concat(dfs, axis=0, ignore_index=True)
+
+    #
     # データ読み込み（内部）
     #
     def _load(
@@ -171,22 +204,12 @@ class NDBMedicine:
             logger.warning('条件に合致するファイルが見つかりません')
             return None
 
-        download_dfs = []
-        for fileinfo in tqdm(files, desc='Loading...', disable=not progress_bar):
-            try:
-                df = self.transformer.read_file(
-                    fileinfo,
-                    condition_medical_class=medical_class,
-                    include_total=include_total
-                )
-                download_dfs.append(df)
-            except Exception as e:
-                logger.error(f'ファイルの読み込みに失敗: {fileinfo.url} - {e}')
-
-        if not download_dfs:
-            return None
-
-        return pd.concat(download_dfs, axis=0, ignore_index=True)
+        return self._read_files(
+            files,
+            medical_class=medical_class,
+            include_total=include_total,
+            progress_bar=progress_bar
+        )
 
     #
     # データ読み込み（性年齢別）
@@ -354,43 +377,93 @@ class NDBMedicine:
     def read_excel(
             self,
             filepath: Union[str, os.PathLike],
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
             *,
-            include_total: bool = False
+            nth: Union[int, List[int], None] = None,
+            year: Union[int, List[int], None] = None,
+            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
+            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            method: Union[Literal['性年齢別', '都道府県別', '診療月別'], List[Literal['性年齢別', '都道府県別', '診療月別']], None] = None,
+            include_total: bool = False,
+            progress_bar: bool = True
     ) -> Optional[pd.DataFrame]:
         """ローカルに保存されたExcelファイルを読み込み
 
         Args:
-            filepath: 読み込み元のExcelファイル。
+            filepath: 読み込み元のExcelファイルまたはディレクトリ。
+                ファイルの場合：単一ファイルを読み込み。
+                ディレクトリの場合：内部の.xlsxファイルをフィルタリングして読み込み。
                 ファイル名は `"{nth}【{dosage}】{medical_class}_{method}薬効分類別数量.xlsx"` の形式が必須。
-            medical_class: 診療区分。指定しない場合、すべてのシートを読み込む。
+            nth: 実施回。単一値または配列で指定可能。負の値を指定すると、利用可能な実施回のリストから後ろから数える（-1は最新、-2は最新の1つ前、など）。
+            year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
+            dosage: 剤形。
+            medical_class: 診療区分。
+            method: 集計方法。
             include_total: `True`の場合、総計行を含める。
+            progress_bar: `True`の場合、進捗バーを表示。
 
         Returns:
-            `pd.DataFrame` または `None`（パース失敗）
+            `pd.DataFrame` または `None`（該当データなし）
         """
         # パス型に統一
         if isinstance(filepath, str):
             filepath = Path(filepath)
 
-        if not isinstance(filepath, Path) or not filepath.parent.is_dir():
-            raise FileNotFoundError(f"No such file: '{filepath}'")
+        if not isinstance(filepath, Path):
+            raise ValueError(f"Invalid filepath: '{filepath}'")
 
-        # ファイル名を FileInfo に変換
-        fileinfo = self._parse_to_fileinfo(filepath)
-        if not fileinfo:
-            raise ValueError(f"ファイル名が不正です。'{filepath.name}'")
+        if filepath.is_file():
+            # 単一ファイルの場合
+            if not filepath.parent.is_dir():
+                raise FileNotFoundError(f"No such file: '{filepath}'")
 
-        # ファイルの読み込み
-        try:
-            return self.transformer.read_file(
-                fileinfo,
-                condition_medical_class=medical_class,
-                include_total=include_total
+            fileinfo = self._parse_to_fileinfo(filepath)
+            if not fileinfo:
+                raise ValueError(f"ファイル名が不正です。'{filepath.name}'")
+
+            return self._read_files(
+                [fileinfo],
+                medical_class=medical_class,
+                include_total=include_total,
+                progress_bar=progress_bar,
+                desc='Loading file...'
             )
-        except Exception as e:
-            logger.error(f'ファイルの読み込みに失敗: {filepath} - {e}')
-            raise
+
+        elif filepath.is_dir():
+            # ディレクトリの場合：内部ファイルをフィルタリングして読み込み
+            local_fileinfos = []
+            for f in filepath.iterdir():
+                if f.is_file() and f.suffix == '.xlsx':
+                    fileinfo = self._parse_to_fileinfo(f)
+                    if fileinfo:
+                        local_fileinfos.append(fileinfo)
+
+            if not local_fileinfos:
+                logger.warning('ディレクトリに有効なファイルが見つかりません')
+                return None
+
+            files = self._filter_files(
+                fileinfos=local_fileinfos,
+                nth=nth,
+                year=year,
+                dosage=dosage,
+                medical_class=medical_class,
+                method=method
+            )
+
+            if len(files) == 0:
+                logger.warning('条件に合致するファイルが見つかりません')
+                return None
+
+            return self._read_files(
+                files,
+                medical_class=medical_class,
+                include_total=include_total,
+                progress_bar=progress_bar,
+                desc='Loading local files...'
+            )
+
+        else:
+            raise FileNotFoundError(f"No such file or directory: '{filepath}'")
 
     #
     # ファイル情報の取得
