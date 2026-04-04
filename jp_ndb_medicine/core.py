@@ -103,10 +103,20 @@ class NDBMedicine:
     ) -> List[FileInfo]:
         """条件に合致するファイル情報をフィルタリング"""
         files = self.fileinfo_list.copy()
+        available_nths = sorted(set(f.nth for f in files if f.nth is not None))
+
+        def resolve_nth(n: int) -> int:
+            if n < 0:
+                return available_nths[n]
+            else:
+                return n
 
         # nth で絞り込み
         if nth is not None:
-            nth_list = [nth] if isinstance(nth, int) else nth
+            if isinstance(nth, int):
+                nth_list = [resolve_nth(nth)]
+            else:
+                nth_list = [resolve_nth(n) for n in nth]
             files = [f for f in files if f.nth in nth_list]
 
         # year で絞り込み（nth がない場合のみ）
@@ -194,7 +204,7 @@ class NDBMedicine:
         """性年齢別の処方薬データを読み込み
 
         Args:
-            nth: 実施回。単一値または配列で指定可能。
+            nth: 実施回。単一値または配列で指定可能。負の値を指定すると、利用可能な実施回のリストから後ろから数える（-1は最新、-2は最新の1つ前、など）。
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
@@ -230,7 +240,7 @@ class NDBMedicine:
         """都道府県別の処方薬データを読み込み
 
         Args:
-            nth: 実施回。単一値または配列で指定可能。
+            nth: 実施回。単一値または配列で指定可能。負の値を指定すると、利用可能な実施回のリストから後ろから数える（-1は最新、-2は最新の1つ前、など）。
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
@@ -268,7 +278,7 @@ class NDBMedicine:
         ※【診療月別】は第10回（2023年度）以降のみ。歯科用薬剤は対象外。
 
         Args:
-            nth: 実施回。単一値または配列で指定可能。
+            nth: 実施回。単一値または配列で指定可能。負の値を指定すると、利用可能な実施回のリストから後ろから数える（-1は最新、-2は最新の1つ前、など）。
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
