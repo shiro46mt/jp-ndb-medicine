@@ -1,5 +1,6 @@
 import os
-import re
+import tempfile
+import shutil
 from logging import getLogger
 from pathlib import Path
 from typing import Optional, Union, Literal, List
@@ -8,12 +9,13 @@ import pandas as pd
 from tqdm import tqdm
 
 from .constants import (
-    BASE_YEAR, TIMEOUT_SEC, METHOD_VALUES,
-    MEDICAL_CLASS_DEFAULT_VALUE, FILENAME_PATTERN
+    BASE_YEAR, DOSAGE_VALUES, METHOD_VALUES
 )
+from .helpers import _parse_to_fileinfo
 from .models import FileInfo
 from .scraper import NDBScraper
 from .transformer import NDBTransformer
+from .downloader import NDBDownloader
 
 logger = getLogger(__name__)
 
@@ -25,6 +27,7 @@ class NDBMedicine:
         """初期化：スクレイパーでファイル情報を取得"""
         self.scraper = NDBScraper()
         self.transformer = NDBTransformer()
+        self.downloader = NDBDownloader(logger)
         self.fileinfo_list: List[FileInfo] = []
 
         try:
@@ -34,80 +37,28 @@ class NDBMedicine:
             logger.warning(f'NDBオープンデータのページにアクセスできません: {e}')
 
     #
-    # ファイルダウンロード・保存
-    #
-    def _get_file(self, fileinfo: FileInfo, save_dir: Union[str, os.PathLike]) -> Path:
-        """URLのファイルをダウンロードして保存"""
-        if isinstance(save_dir, str):
-            save_dir = Path(save_dir)
-
-        if not isinstance(save_dir, Path) or not save_dir.is_dir():
-            raise FileNotFoundError(f"No such directory: '{save_dir}'")
-
-        filename = f"{fileinfo}.xlsx"
-        filepath = save_dir / filename
-
-        try:
-            logger.info(f"Downloading '{filename}' from '{fileinfo.url}'")
-            r = __import__('requests').get(fileinfo.url, timeout=TIMEOUT_SEC)
-            r.raise_for_status()
-
-            with open(filepath, 'wb') as f:
-                f.write(r.content)
-
-            logger.info(f"Successfully saved to '{filepath}'")
-        except Exception as e:
-            logger.error(f"Download failed: {e}")
-            raise
-
-        return filepath
-
-    #
-    # ファイルの解析
-    #
-    def _parse_to_fileinfo(self, filepath: Path) -> Optional[FileInfo]:
-        """ファイル名から FileInfo を抽出"""
-        pattern = rf"{FILENAME_PATTERN}"
-        mob = re.match(pattern, filepath.stem)
-
-        if mob:
-            try:
-                nth = int(mob.group(1)) if mob.group(1) else None
-                dosage = mob.group(2)
-                medical_class = mob.group(3) or MEDICAL_CLASS_DEFAULT_VALUE
-                method = mob.group(4)
-
-                return FileInfo(
-                    nth=nth,
-                    dosage=dosage,
-                    medical_class=medical_class,
-                    method=method,
-                    url=str(filepath)
-                )
-            except (IndexError, ValueError) as e:
-                logger.warning(f'ファイル名の解析に失敗: {e}')
-                return None
-
-        return None
-
-    #
     # フィルタリング
     #
     def _filter_files(
             self,
+            *,
             fileinfos: Optional[List[FileInfo]] = None,
             nth: Union[int, List[int], None] = None,
             year: Union[int, List[int], None] = None,
             dosage: Union[str, List[str], None] = None,
             medical_class: Union[str, List[str], None] = None,
-            method: Union[str, List[str], None] = None
+            method: Union[str, List[str], None] = None,
+            public_fund: bool = True
     ) -> List[FileInfo]:
         """条件に合致するファイル情報をフィルタリング"""
         if fileinfos is None:
-            files = self.fileinfo_list.copy()
+            files = self.fileinfo_list
         else:
-            files = fileinfos.copy()
-        available_nths = sorted(set(f.nth for f in files if f.nth is not None))
+            files = fileinfos
+
+        # nth, year 引数の解析
+        nth_list = None
+        available_nths = self.get_available_nth()
 
         def resolve_nth(n: int) -> int:
             if n < 0:
@@ -115,36 +66,20 @@ class NDBMedicine:
             else:
                 return n
 
-        # nth で絞り込み
         if nth is not None:
             if isinstance(nth, int):
                 nth_list = [resolve_nth(nth)]
             else:
                 nth_list = [resolve_nth(n) for n in nth]
-            files = [f for f in files if f.nth in nth_list]
 
-        # year で絞り込み（nth がない場合のみ）
         elif year is not None:
-            year_list = [year] if isinstance(year, int) else year
-            nth_list = [y - BASE_YEAR for y in year_list]
-            files = [f for f in files if f.nth in nth_list]
+            if isinstance(year, int):
+                nth_list = [year - BASE_YEAR]
+            else:
+                nth_list = [y - BASE_YEAR for y in year]
 
-        # dosage で絞り込み
-        if dosage is not None:
-            dosage_list = [dosage] if isinstance(dosage, str) else dosage
-            files = [f for f in files if f.dosage in dosage_list]
-
-        # medical_class で絞り込み
-        if medical_class is not None:
-            medical_class_list = [medical_class] if isinstance(medical_class, str) else medical_class
-            files = [f for f in files if (f.medical_class in medical_class_list) or (f.medical_class == MEDICAL_CLASS_DEFAULT_VALUE)]
-
-        # method で絞り込み
-        if method is not None:
-            method_list = [method] if isinstance(method, str) else method
-            files = [f for f in files if f.method in method_list]
-
-        return files
+        # 条件に合致するファイル情報を返す
+        return [f for f in files if f.match(nth=nth_list, dosage=dosage, medical_class=medical_class, method=method, public_fund=public_fund)]
 
     #
     # データ読み込み（ヘルパー）
@@ -186,6 +121,7 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            public_fund: bool = True,
             include_total: bool = False,
             progress_bar: bool = True
     ) -> Optional[pd.DataFrame]:
@@ -197,19 +133,57 @@ class NDBMedicine:
             year=year,
             dosage=dosage,
             medical_class=medical_class,
-            method=method
+            method=method,
+            public_fund=public_fund
         )
 
         if len(files) == 0:
             logger.warning('条件に合致するファイルが見つかりません')
             return None
 
-        return self._read_files(
-            files,
-            medical_class=medical_class,
-            include_total=include_total,
-            progress_bar=progress_bar
-        )
+        # ZIP ファイルが含まれる場合はダウンロードして展開し、内部の xlsx をフィルタリングして追加する
+        zip_files = [f for f in files if f.is_zip_file]
+        xlsx_files = [f for f in files if not f.is_zip_file]
+        temp_extract_dir = None
+        if zip_files:
+            temp_extract_dir = Path(tempfile.mkdtemp(prefix='jp_ndb_medicine_'))
+            extracted_fileinfos: List[FileInfo] = []
+            for z in zip_files:
+                try:
+                    extracted_paths = self.downloader.download_and_extract_zip(z, temp_extract_dir)
+                    for p in extracted_paths:
+                        fi = _parse_to_fileinfo(p, logger)
+                        if fi:
+                            extracted_fileinfos.append(fi)
+                except Exception as e:
+                    logger.error(f'ZIP のダウンロード/展開に失敗: {z.url} - {e}')
+
+            if extracted_fileinfos:
+                matched = self._filter_files(
+                    fileinfos=extracted_fileinfos,
+                    nth=nth,
+                    year=year,
+                    dosage=dosage,
+                    medical_class=medical_class,
+                    method=method,
+                    public_fund=public_fund
+                )
+                # 展開された一致ファイルを読み込み対象に追加
+                xlsx_files.extend(matched)
+
+        try:
+            return self._read_files(
+                xlsx_files,
+                medical_class=medical_class,
+                include_total=include_total,
+                progress_bar=progress_bar
+            )
+        finally:
+            if temp_extract_dir is not None:
+                try:
+                    shutil.rmtree(temp_extract_dir)
+                except Exception:
+                    pass
 
     #
     # データ読み込み（性年齢別）
@@ -221,6 +195,7 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            public_fund: bool = True,
             include_total: bool = False,
             progress_bar: bool = True
     ) -> Optional[pd.DataFrame]:
@@ -231,6 +206,7 @@ class NDBMedicine:
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
+            public_fund: `True`の場合、公費レセプトを含むデータを読み込む（第10回以降）。
             include_total: `True`の場合、総計行を含める。
             progress_bar: `True`の場合、進捗バーを表示。
 
@@ -243,6 +219,7 @@ class NDBMedicine:
             year=year,
             dosage=dosage,
             medical_class=medical_class,
+            public_fund=public_fund,
             include_total=include_total,
             progress_bar=progress_bar
         )
@@ -257,6 +234,7 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            public_fund: bool = True,
             include_total: bool = False,
             progress_bar: bool = True
     ) -> Optional[pd.DataFrame]:
@@ -267,6 +245,7 @@ class NDBMedicine:
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
+            public_fund: `True`の場合、公費レセプトを含むデータを読み込む（第10回以降）。
             include_total: `True`の場合、総計行を含める。
             progress_bar: `True`の場合、進捗バーを表示。
 
@@ -279,6 +258,7 @@ class NDBMedicine:
             year=year,
             dosage=dosage,
             medical_class=medical_class,
+            public_fund=public_fund,
             include_total=include_total,
             progress_bar=progress_bar
         )
@@ -293,6 +273,7 @@ class NDBMedicine:
             year: Union[int, List[int], None] = None,
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
+            public_fund: bool = True,
             include_total: bool = False,
             progress_bar: bool = True
     ) -> Optional[pd.DataFrame]:
@@ -305,6 +286,7 @@ class NDBMedicine:
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
+            public_fund: `True`の場合、公費レセプトを含むデータを読み込む（第10回以降）。
             include_total: `True`の場合、総計行を含める。
             progress_bar: `True`の場合、進捗バーを表示。
 
@@ -317,6 +299,7 @@ class NDBMedicine:
             year=year,
             dosage=dosage,
             medical_class=medical_class,
+            public_fund=public_fund,
             include_total=include_total,
             progress_bar=progress_bar
         )
@@ -333,6 +316,7 @@ class NDBMedicine:
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
             method: Union[Literal['性年齢別', '都道府県別', '診療月別'], List[Literal['性年齢別', '都道府県別', '診療月別']], None] = None,
+            public_fund: bool = True,
             progress_bar: bool = True
     ) -> List[str]:
         """Excelファイルをダウンロードしてローカルに保存
@@ -344,16 +328,24 @@ class NDBMedicine:
             dosage: 剤形。
             medical_class: 診療区分。
             method: 集計方法。
+            public_fund: `True`の場合、公費レセプトを含むデータを読み込む（第10回以降）。
             progress_bar: `True`の場合、進捗バーを表示。
 
         Returns:
             保存したファイルパス (str) のリスト
         """
+        if isinstance(save_dir, str):
+            save_dir = Path(save_dir)
+
+        if not isinstance(save_dir, Path) or not save_dir.is_dir():
+            raise FileNotFoundError(f"No such directory: '{save_dir}'")
+
         fileinfos = self._filter_files(
             nth=nth,
             year=year,
             dosage=dosage,
             medical_class=medical_class,
+            public_fund=public_fund,
             method=method
         )
 
@@ -364,8 +356,9 @@ class NDBMedicine:
         download_files = []
         for fileinfo in tqdm(fileinfos, desc='Downloading...', disable=not progress_bar):
             try:
-                filepath = self._get_file(fileinfo, save_dir)
-                download_files.append(str(filepath))
+                filepath = self.downloader.download(fileinfo, save_dir)
+                if filepath not in download_files:
+                    download_files.append(str(filepath))
             except Exception as e:
                 logger.error(f'ファイルのダウンロードに失敗: {fileinfo.url} - {e}')
 
@@ -383,6 +376,7 @@ class NDBMedicine:
             dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
             medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
             method: Union[Literal['性年齢別', '都道府県別', '診療月別'], List[Literal['性年齢別', '都道府県別', '診療月別']], None] = None,
+            public_fund: bool = True,
             include_total: bool = False,
             progress_bar: bool = True
     ) -> Optional[pd.DataFrame]:
@@ -392,12 +386,13 @@ class NDBMedicine:
             filepath: 読み込み元のExcelファイルまたはディレクトリ。
                 ファイルの場合：単一ファイルを読み込み。
                 ディレクトリの場合：内部の.xlsxファイルをフィルタリングして読み込み。
-                ファイル名は `"{nth}【{dosage}】{medical_class}_{method}薬効分類別数量.xlsx"` の形式が必須。
+                ファイル名は `"{nth}【{dosage}】{medical_class}_{method}薬効分類別数量.xlsx"` または `"{nth}【{dosage}】{medical_class}_{method}薬効分類別数量(公費含む).xlsx"` の形式が必須。
             nth: 実施回。単一値または配列で指定可能。負の値を指定すると、利用可能な実施回のリストから後ろから数える（-1は最新、-2は最新の1つ前、など）。
             year: 実施年度。`nth` とともに指定した場合、`nth` が優先される。
             dosage: 剤形。
             medical_class: 診療区分。
             method: 集計方法。
+            public_fund: `True`の場合、公費レセプトを含むデータを読み込む（第10回以降）。
             include_total: `True`の場合、総計行を含める。
             progress_bar: `True`の場合、進捗バーを表示。
 
@@ -413,10 +408,7 @@ class NDBMedicine:
 
         if filepath.is_file():
             # 単一ファイルの場合
-            if not filepath.parent.is_dir():
-                raise FileNotFoundError(f"No such file: '{filepath}'")
-
-            fileinfo = self._parse_to_fileinfo(filepath)
+            fileinfo = _parse_to_fileinfo(filepath, logger)
             if not fileinfo:
                 raise ValueError(f"ファイル名が不正です。'{filepath.name}'")
 
@@ -429,11 +421,11 @@ class NDBMedicine:
             )
 
         elif filepath.is_dir():
-            # ディレクトリの場合：内部ファイルをフィルタリングして読み込み
+            # ディレクトリの場合：内部ファイルを再帰的にフィルタリングして読み込み
             local_fileinfos = []
-            for f in filepath.iterdir():
-                if f.is_file() and f.suffix == '.xlsx':
-                    fileinfo = self._parse_to_fileinfo(f)
+            for f in filepath.rglob('*.xlsx'):
+                if f.is_file():
+                    fileinfo = _parse_to_fileinfo(f, logger)
                     if fileinfo:
                         local_fileinfos.append(fileinfo)
 
@@ -447,7 +439,8 @@ class NDBMedicine:
                 year=year,
                 dosage=dosage,
                 medical_class=medical_class,
-                method=method
+                method=method,
+                public_fund=public_fund
             )
 
             if len(files) == 0:
@@ -472,17 +465,26 @@ class NDBMedicine:
         """取得したファイル情報の一覧を返す"""
         return self.fileinfo_list.copy()
 
+    def get_available_nth(self) -> List[int]:
+        """利用可能な実施回を返す"""
+        nths = sorted(set(f.nth for f in self.fileinfo_list))
+        return nths
+
     def get_available_years(self) -> List[int]:
         """利用可能な年度を返す"""
-        years = sorted(set(f.nth + BASE_YEAR for f in self.fileinfo_list))
+        years = sorted(set(f.year for f in self.fileinfo_list))
         return years
 
-    def get_available_dosages(self) -> List[str]:
+    def get_available_dosages(self, *, nth: Optional[int] = None) -> List[str]:
         """利用可能な剤形を返す"""
-        dosages = sorted(set(f.dosage for f in self.fileinfo_list))
-        return dosages
+        if nth and nth < 7:
+            return ('内服', '外用', '注射')
+        else:
+            return DOSAGE_VALUES
 
-    def get_available_methods(self) -> List[str]:
+    def get_available_methods(self, *, nth: Optional[int] = None) -> List[str]:
         """利用可能な集計方法を返す"""
-        methods = sorted(set(f.method for f in self.fileinfo_list))
-        return methods
+        if nth and nth < 10:
+            return ('性年齢別', '都道府県別')
+        else:
+            return METHOD_VALUES

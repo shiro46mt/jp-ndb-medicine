@@ -9,7 +9,7 @@ import requests
 
 from .constants import (
     DOMAIN_MHLW, URL_TOP, HEADERS, TIMEOUT_SEC, INTERVAL_SEC,
-    NTH_PATTERN, DOSAGE_VALUES, METHOD_VALUES, MEDICAL_CLASS_VALUES, MEDICAL_CLASS_DEFAULT_VALUE
+    NTH_PATTERN, DOSAGE_VALUES, METHOD_VALUES, MEDICAL_CLASS_VALUES
 )
 from .models import FileInfo
 from .helpers import _search
@@ -76,12 +76,19 @@ class NDBScraper:
         h3_tag = soup.find('h3', string=re.compile('処方薬|薬剤'))
 
         if h3_tag is None:
-            raise ValueError("Could not find h3 tag with expected content")
+            # 第11回のページ構成が変更されたため、h4タグも検索するように変更
+            h3_tag = soup.find('h4', string=re.compile('処方薬|薬剤'))
 
+            if h3_tag is None:
+                raise ValueError("Could not find h3 tag with expected content")
+
+        # ここから、h3タグの次の要素を順に処理していく（次のh3タグが出てくるまで）
         section = ''
         for tag in h3_tag.find_all_next(['h3', 'h4', 'a']):
             if tag.name == 'h3':
                 break
+            elif '公費レセプトを' in tag.text:
+                self._process_link_public_fund(tag, nth)
             elif tag.name == 'h4':
                 section = tag.text.strip()
             elif '薬効分類別数量' in tag.text:
@@ -102,10 +109,47 @@ class NDBScraper:
             return
 
         # 診療区分と集計方法
-        medical_class = _search(MEDICAL_CLASS_VALUES, name, default=MEDICAL_CLASS_DEFAULT_VALUE)
+        medical_class = _search(MEDICAL_CLASS_VALUES, name)
         method = _search(METHOD_VALUES, name)
+        public_fund = (nth >= 10)  # 第9回までは公費レセプトを含まない。第10回は公費レセプトを含む。
 
         link = urljoin(DOMAIN_MHLW, tag.attrs['href'])
         self.fileinfo_list.append(
-            FileInfo(nth, dosage, medical_class, method, link)
+            FileInfo(
+                url=link,
+                nth=nth,
+                public_fund=public_fund,
+                dosage=dosage,
+                medical_class=medical_class,
+                method=method,
+                is_zip_file=False
+            )
         )
+
+    def _process_link_public_fund(self, tag, nth: int) -> None:
+        """aタグから FileInfo を抽出"""
+        for a in tag.find_all("a"):
+            # aタグ直前までの親要素内テキストを取得
+            label = a.previous_sibling.strip() if a.previous_sibling else ""
+
+            if "公費レセプトを含まないデータ" in label:
+                link = urljoin(DOMAIN_MHLW, a.attrs['href'])
+                self.fileinfo_list.append(
+                    FileInfo(
+                        url=link,
+                        nth=nth,
+                        public_fund=False,
+                        is_zip_file=True
+                    )
+                )
+
+            elif "公費レセプトを含むデータ" in label:
+                link = urljoin(DOMAIN_MHLW, a.attrs['href'])
+                self.fileinfo_list.append(
+                    FileInfo(
+                        url=link,
+                        nth=nth,
+                        public_fund=True,
+                        is_zip_file=True
+                    )
+                )
