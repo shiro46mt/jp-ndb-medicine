@@ -1,14 +1,15 @@
-from typing import NamedTuple, Union, List
+from typing import NamedTuple, Optional, Union
 
 from .constants import BASE_YEAR
+
 
 class FileInfo(NamedTuple):
     url: str
     nth: int
     public_fund: bool
-    dosage: str | None = None
-    medical_class: str | None = None
-    method: str | None = None
+    dosage: Optional[str] = None
+    medical_class: Optional[str] = None
+    method: Optional[str] = None
     is_zip_file: bool = False
 
     def __str__(self):
@@ -26,11 +27,11 @@ class FileInfo(NamedTuple):
 
     def match(
         self,
-        nth: Union[int, List[int], None] = None,
-        dosage: Union[str, List[str], None] = None,
-        medical_class: Union[str, List[str], None] = None,
-        method: Union[str, List[str], None] = None,
-        public_fund: bool = True
+        nth: Union[int, list[int], None] = None,
+        dosage: Union[str, list[str], None] = None,
+        medical_class: Union[str, list[str], None] = None,
+        method: Union[str, list[str], None] = None,
+        public_fund: bool = True,
     ) -> bool:
         """条件に合致するかどうかを判定する"""
         # nth で絞り込み
@@ -43,7 +44,7 @@ class FileInfo(NamedTuple):
                     return False
 
         # dosage で絞り込み
-        if (dosage is not None) and (self.dosage is not None) and (self.dosage != ''):
+        if (dosage is not None) and (self.dosage is not None) and (self.dosage != ""):
             if isinstance(dosage, str):
                 if self.dosage != dosage:
                     return False
@@ -52,7 +53,7 @@ class FileInfo(NamedTuple):
                     return False
 
         # medical_class で絞り込み
-        if (medical_class is not None) and (self.medical_class is not None) and (self.medical_class != ''):
+        if (medical_class is not None) and (self.medical_class is not None) and (self.medical_class != ""):
             if isinstance(medical_class, str):
                 if self.medical_class != medical_class:
                     return False
@@ -61,7 +62,7 @@ class FileInfo(NamedTuple):
                     return False
 
         # method で絞り込み
-        if (method is not None) and (self.method is not None) and (self.method != ''):
+        if (method is not None) and (self.method is not None) and (self.method != ""):
             if isinstance(method, str):
                 if self.method != method:
                     return False

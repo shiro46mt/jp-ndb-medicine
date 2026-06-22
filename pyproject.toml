@@ -3,7 +3,7 @@ name = "jp_ndb_medicine"
 version = "1.2.0"
 description = "NDBオープンデータから、処方薬のデータを簡単に取得・利用するためのライブラリ"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -31,4 +31,36 @@ Repository = "https://github.com/shiro46mt/jp-ndb-medicine.git"
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",
+    "ruff>=0.11",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "C",      # flake8-comprehensions
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+]
+ignore = ["E501", "C901"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["jp_ndb_medicine"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

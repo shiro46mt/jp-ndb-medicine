@@ -1,21 +1,19 @@
 import os
-import tempfile
 import shutil
+import tempfile
 from logging import getLogger
 from pathlib import Path
-from typing import Optional, Union, Literal, List
+from typing import Literal, Optional, Union
 
 import pandas as pd
 from tqdm import tqdm
 
-from .constants import (
-    BASE_YEAR, DOSAGE_VALUES, METHOD_VALUES
-)
+from .constants import BASE_YEAR, DOSAGE_VALUES, METHOD_VALUES
+from .downloader import NDBDownloader
 from .helpers import _parse_to_fileinfo
 from .models import FileInfo
 from .scraper import NDBScraper
 from .transformer import NDBTransformer
-from .downloader import NDBDownloader
 
 logger = getLogger(__name__)
 
@@ -28,28 +26,28 @@ class NDBMedicine:
         self.scraper = NDBScraper()
         self.transformer = NDBTransformer()
         self.downloader = NDBDownloader(logger)
-        self.fileinfo_list: List[FileInfo] = []
+        self.fileinfo_list: list[FileInfo] = []
 
         try:
             self.fileinfo_list = self.scraper.fetch_all()
-            logger.info(f'ファイル情報を取得しました: {len(self.fileinfo_list)}件')
+            logger.info(f"ファイル情報を取得しました: {len(self.fileinfo_list)}件")
         except Exception as e:
-            logger.warning(f'NDBオープンデータのページにアクセスできません: {e}')
+            logger.warning(f"NDBオープンデータのページにアクセスできません: {e}")
 
     #
     # フィルタリング
     #
     def _filter_files(
-            self,
-            *,
-            fileinfos: Optional[List[FileInfo]] = None,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[str, List[str], None] = None,
-            medical_class: Union[str, List[str], None] = None,
-            method: Union[str, List[str], None] = None,
-            public_fund: bool = True
-    ) -> List[FileInfo]:
+        self,
+        *,
+        fileinfos: Optional[list[FileInfo]] = None,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[str, list[str], None] = None,
+        medical_class: Union[str, list[str], None] = None,
+        method: Union[str, list[str], None] = None,
+        public_fund: bool = True,
+    ) -> list[FileInfo]:
         """条件に合致するファイル情報をフィルタリング"""
         if fileinfos is None:
             files = self.fileinfo_list
@@ -79,18 +77,32 @@ class NDBMedicine:
                 nth_list = [y - BASE_YEAR for y in year]
 
         # 条件に合致するファイル情報を返す
-        return [f for f in files if f.match(nth=nth_list, dosage=dosage, medical_class=medical_class, method=method, public_fund=public_fund)]
+        return [
+            f
+            for f in files
+            if f.match(
+                nth=nth_list,
+                dosage=dosage,
+                medical_class=medical_class,
+                method=method,
+                public_fund=public_fund,
+            )
+        ]
 
     #
     # データ読み込み（ヘルパー）
     #
     def _read_files(
-            self,
-            files: List[FileInfo],
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None],
-            include_total: bool,
-            progress_bar: bool,
-            desc: str = 'Loading...'
+        self,
+        files: list[FileInfo],
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ],
+        include_total: bool,
+        progress_bar: bool,
+        desc: str = "Loading...",
     ) -> Optional[pd.DataFrame]:
         """ファイル情報を基にデータを読み込み・結合"""
         dfs = []
@@ -99,11 +111,11 @@ class NDBMedicine:
                 df = self.transformer.read_file(
                     fileinfo,
                     condition_medical_class=medical_class,
-                    include_total=include_total
+                    include_total=include_total,
                 )
                 dfs.append(df)
             except Exception as e:
-                logger.error(f'ファイルの読み込みに失敗: {fileinfo.url} - {e}')
+                logger.error(f"ファイルの読み込みに失敗: {fileinfo.url} - {e}")
 
         if not dfs:
             return None
@@ -114,16 +126,24 @@ class NDBMedicine:
     # データ読み込み（内部）
     #
     def _load(
-            self,
-            method: Literal['性年齢別', '都道府県別', '診療月別'],
-            *,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            public_fund: bool = True,
-            include_total: bool = False,
-            progress_bar: bool = True
+        self,
+        method: Literal["性年齢別", "都道府県別", "診療月別"],
+        *,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[
+            Literal["内服", "外用", "注射", "歯科用薬剤"],
+            list[Literal["内服", "外用", "注射", "歯科用薬剤"]],
+            None,
+        ] = None,
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ] = None,
+        public_fund: bool = True,
+        include_total: bool = False,
+        progress_bar: bool = True,
     ) -> Optional[pd.DataFrame]:
         """厚労省HPから処方薬データをダウンロード・読み込み"""
         assert method in METHOD_VALUES, f"method は {METHOD_VALUES} のいずれかを指定してください"
@@ -134,11 +154,11 @@ class NDBMedicine:
             dosage=dosage,
             medical_class=medical_class,
             method=method,
-            public_fund=public_fund
+            public_fund=public_fund,
         )
 
         if len(files) == 0:
-            logger.warning('条件に合致するファイルが見つかりません')
+            logger.warning("条件に合致するファイルが見つかりません")
             return None
 
         # ZIP ファイルが含まれる場合はダウンロードして展開し、内部の xlsx をフィルタリングして追加する
@@ -146,8 +166,8 @@ class NDBMedicine:
         xlsx_files = [f for f in files if not f.is_zip_file]
         temp_extract_dir = None
         if zip_files:
-            temp_extract_dir = Path(tempfile.mkdtemp(prefix='jp_ndb_medicine_'))
-            extracted_fileinfos: List[FileInfo] = []
+            temp_extract_dir = Path(tempfile.mkdtemp(prefix="jp_ndb_medicine_"))
+            extracted_fileinfos: list[FileInfo] = []
             for z in zip_files:
                 try:
                     extracted_paths = self.downloader.download_and_extract_zip(z, temp_extract_dir)
@@ -156,7 +176,7 @@ class NDBMedicine:
                         if fi:
                             extracted_fileinfos.append(fi)
                 except Exception as e:
-                    logger.error(f'ZIP のダウンロード/展開に失敗: {z.url} - {e}')
+                    logger.error(f"ZIP のダウンロード/展開に失敗: {z.url} - {e}")
 
             if extracted_fileinfos:
                 matched = self._filter_files(
@@ -166,7 +186,7 @@ class NDBMedicine:
                     dosage=dosage,
                     medical_class=medical_class,
                     method=method,
-                    public_fund=public_fund
+                    public_fund=public_fund,
                 )
                 # 展開された一致ファイルを読み込み対象に追加
                 xlsx_files.extend(matched)
@@ -176,7 +196,7 @@ class NDBMedicine:
                 xlsx_files,
                 medical_class=medical_class,
                 include_total=include_total,
-                progress_bar=progress_bar
+                progress_bar=progress_bar,
             )
         finally:
             if temp_extract_dir is not None:
@@ -189,15 +209,23 @@ class NDBMedicine:
     # データ読み込み（性年齢別）
     #
     def load_age(
-            self,
-            *,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            public_fund: bool = True,
-            include_total: bool = False,
-            progress_bar: bool = True
+        self,
+        *,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[
+            Literal["内服", "外用", "注射", "歯科用薬剤"],
+            list[Literal["内服", "外用", "注射", "歯科用薬剤"]],
+            None,
+        ] = None,
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ] = None,
+        public_fund: bool = True,
+        include_total: bool = False,
+        progress_bar: bool = True,
     ) -> Optional[pd.DataFrame]:
         """性年齢別の処方薬データを読み込み
 
@@ -214,29 +242,37 @@ class NDBMedicine:
             `pd.DataFrame` または `None`（該当データなし）
         """
         return self._load(
-            '性年齢別',
+            "性年齢別",
             nth=nth,
             year=year,
             dosage=dosage,
             medical_class=medical_class,
             public_fund=public_fund,
             include_total=include_total,
-            progress_bar=progress_bar
+            progress_bar=progress_bar,
         )
 
     #
     # データ読み込み（都道府県別）
     #
     def load_pref(
-            self,
-            *,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            public_fund: bool = True,
-            include_total: bool = False,
-            progress_bar: bool = True
+        self,
+        *,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[
+            Literal["内服", "外用", "注射", "歯科用薬剤"],
+            list[Literal["内服", "外用", "注射", "歯科用薬剤"]],
+            None,
+        ] = None,
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ] = None,
+        public_fund: bool = True,
+        include_total: bool = False,
+        progress_bar: bool = True,
     ) -> Optional[pd.DataFrame]:
         """都道府県別の処方薬データを読み込み
 
@@ -253,29 +289,37 @@ class NDBMedicine:
             `pd.DataFrame` または `None`（該当データなし）
         """
         return self._load(
-            '都道府県別',
+            "都道府県別",
             nth=nth,
             year=year,
             dosage=dosage,
             medical_class=medical_class,
             public_fund=public_fund,
             include_total=include_total,
-            progress_bar=progress_bar
+            progress_bar=progress_bar,
         )
 
     #
     # データ読み込み（診療月別）
     #
     def load_month(
-            self,
-            *,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            public_fund: bool = True,
-            include_total: bool = False,
-            progress_bar: bool = True
+        self,
+        *,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[
+            Literal["内服", "外用", "注射", "歯科用薬剤"],
+            list[Literal["内服", "外用", "注射", "歯科用薬剤"]],
+            None,
+        ] = None,
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ] = None,
+        public_fund: bool = True,
+        include_total: bool = False,
+        progress_bar: bool = True,
     ) -> Optional[pd.DataFrame]:
         """診療月別の処方薬データを読み込み
 
@@ -294,31 +338,43 @@ class NDBMedicine:
             `pd.DataFrame` または `None`（該当データなし）
         """
         return self._load(
-            '診療月別',
+            "診療月別",
             nth=nth,
             year=year,
             dosage=dosage,
             medical_class=medical_class,
             public_fund=public_fund,
             include_total=include_total,
-            progress_bar=progress_bar
+            progress_bar=progress_bar,
         )
 
     #
     # ファイル保存
     #
     def save(
-            self,
-            save_dir: Union[str, os.PathLike],
-            *,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            method: Union[Literal['性年齢別', '都道府県別', '診療月別'], List[Literal['性年齢別', '都道府県別', '診療月別']], None] = None,
-            public_fund: bool = True,
-            progress_bar: bool = True
-    ) -> List[str]:
+        self,
+        save_dir: Union[str, os.PathLike],
+        *,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[
+            Literal["内服", "外用", "注射", "歯科用薬剤"],
+            list[Literal["内服", "外用", "注射", "歯科用薬剤"]],
+            None,
+        ] = None,
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ] = None,
+        method: Union[
+            Literal["性年齢別", "都道府県別", "診療月別"],
+            list[Literal["性年齢別", "都道府県別", "診療月別"]],
+            None,
+        ] = None,
+        public_fund: bool = True,
+        progress_bar: bool = True,
+    ) -> list[str]:
         """Excelファイルをダウンロードしてローカルに保存
 
         Args:
@@ -346,21 +402,21 @@ class NDBMedicine:
             dosage=dosage,
             medical_class=medical_class,
             public_fund=public_fund,
-            method=method
+            method=method,
         )
 
         if not fileinfos:
-            logger.warning('条件に合致するファイルが見つかりません')
+            logger.warning("条件に合致するファイルが見つかりません")
             return []
 
         download_files = []
-        for fileinfo in tqdm(fileinfos, desc='Downloading...', disable=not progress_bar):
+        for fileinfo in tqdm(fileinfos, desc="Downloading...", disable=not progress_bar):
             try:
                 filepath = self.downloader.download(fileinfo, save_dir)
                 if filepath not in download_files:
                     download_files.append(str(filepath))
             except Exception as e:
-                logger.error(f'ファイルのダウンロードに失敗: {fileinfo.url} - {e}')
+                logger.error(f"ファイルのダウンロードに失敗: {fileinfo.url} - {e}")
 
         return download_files
 
@@ -368,17 +424,29 @@ class NDBMedicine:
     # ローカルファイル読み込み
     #
     def read_excel(
-            self,
-            filepath: Union[str, os.PathLike],
-            *,
-            nth: Union[int, List[int], None] = None,
-            year: Union[int, List[int], None] = None,
-            dosage: Union[Literal['内服', '外用', '注射', '歯科用薬剤'], List[Literal['内服', '外用', '注射', '歯科用薬剤']], None] = None,
-            medical_class: Union[Literal['外来（院内）', '外来（院外）', '入院'], List[Literal['外来（院内）', '外来（院外）', '入院']], None] = None,
-            method: Union[Literal['性年齢別', '都道府県別', '診療月別'], List[Literal['性年齢別', '都道府県別', '診療月別']], None] = None,
-            public_fund: bool = True,
-            include_total: bool = False,
-            progress_bar: bool = True
+        self,
+        filepath: Union[str, os.PathLike],
+        *,
+        nth: Union[int, list[int], None] = None,
+        year: Union[int, list[int], None] = None,
+        dosage: Union[
+            Literal["内服", "外用", "注射", "歯科用薬剤"],
+            list[Literal["内服", "外用", "注射", "歯科用薬剤"]],
+            None,
+        ] = None,
+        medical_class: Union[
+            Literal["外来（院内）", "外来（院外）", "入院"],
+            list[Literal["外来（院内）", "外来（院外）", "入院"]],
+            None,
+        ] = None,
+        method: Union[
+            Literal["性年齢別", "都道府県別", "診療月別"],
+            list[Literal["性年齢別", "都道府県別", "診療月別"]],
+            None,
+        ] = None,
+        public_fund: bool = True,
+        include_total: bool = False,
+        progress_bar: bool = True,
     ) -> Optional[pd.DataFrame]:
         """ローカルに保存されたExcelファイルを読み込み
 
@@ -417,20 +485,20 @@ class NDBMedicine:
                 medical_class=medical_class,
                 include_total=include_total,
                 progress_bar=progress_bar,
-                desc='Loading file...'
+                desc="Loading file...",
             )
 
         elif filepath.is_dir():
             # ディレクトリの場合：内部ファイルを再帰的にフィルタリングして読み込み
             local_fileinfos = []
-            for f in filepath.rglob('*.xlsx'):
+            for f in filepath.rglob("*.xlsx"):
                 if f.is_file():
                     fileinfo = _parse_to_fileinfo(f, logger)
                     if fileinfo:
                         local_fileinfos.append(fileinfo)
 
             if not local_fileinfos:
-                logger.warning('ディレクトリに有効なファイルが見つかりません')
+                logger.warning("ディレクトリに有効なファイルが見つかりません")
                 return None
 
             files = self._filter_files(
@@ -440,11 +508,11 @@ class NDBMedicine:
                 dosage=dosage,
                 medical_class=medical_class,
                 method=method,
-                public_fund=public_fund
+                public_fund=public_fund,
             )
 
             if len(files) == 0:
-                logger.warning('条件に合致するファイルが見つかりません')
+                logger.warning("条件に合致するファイルが見つかりません")
                 return None
 
             return self._read_files(
@@ -452,7 +520,7 @@ class NDBMedicine:
                 medical_class=medical_class,
                 include_total=include_total,
                 progress_bar=progress_bar,
-                desc='Loading local files...'
+                desc="Loading local files...",
             )
 
         else:
@@ -461,30 +529,30 @@ class NDBMedicine:
     #
     # ファイル情報の取得
     #
-    def get_fileinfo_list(self) -> List[FileInfo]:
+    def get_fileinfo_list(self) -> list[FileInfo]:
         """取得したファイル情報の一覧を返す"""
         return self.fileinfo_list.copy()
 
-    def get_available_nth(self) -> List[int]:
+    def get_available_nth(self) -> list[int]:
         """利用可能な実施回を返す"""
-        nths = sorted(set(f.nth for f in self.fileinfo_list))
+        nths = sorted({f.nth for f in self.fileinfo_list})
         return nths
 
-    def get_available_years(self) -> List[int]:
+    def get_available_years(self) -> list[int]:
         """利用可能な年度を返す"""
-        years = sorted(set(f.year for f in self.fileinfo_list))
+        years = sorted({f.year for f in self.fileinfo_list})
         return years
 
-    def get_available_dosages(self, *, nth: Optional[int] = None) -> List[str]:
+    def get_available_dosages(self, *, nth: Optional[int] = None) -> list[str]:
         """利用可能な剤形を返す"""
         if nth and nth < 7:
-            return ('内服', '外用', '注射')
+            return ("内服", "外用", "注射")
         else:
             return DOSAGE_VALUES
 
-    def get_available_methods(self, *, nth: Optional[int] = None) -> List[str]:
+    def get_available_methods(self, *, nth: Optional[int] = None) -> list[str]:
         """利用可能な集計方法を返す"""
         if nth and nth < 10:
-            return ('性年齢別', '都道府県別')
+            return ("性年齢別", "都道府県別")
         else:
             return METHOD_VALUES

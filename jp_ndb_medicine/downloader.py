@@ -1,13 +1,12 @@
-import tempfile
 import re
+import tempfile
 import zipfile
-from pathlib import Path
 from logging import Logger
-from typing import List
+from pathlib import Path
 
 import requests
 
-from .constants import TIMEOUT_SEC, FILENAME_PATTERN
+from .constants import FILENAME_PATTERN, TIMEOUT_SEC
 from .models import FileInfo
 
 
@@ -27,7 +26,7 @@ class NDBDownloader:
             self.logger.info(f"Downloading '{filename}' from '{fileinfo.url}'")
             r = requests.get(fileinfo.url, timeout=TIMEOUT_SEC)
             r.raise_for_status()
-            with open(filepath, 'wb') as f:
+            with open(filepath, "wb") as f:
                 f.write(r.content)
             self.logger.info(f"Successfully saved to '{filepath}'")
         except Exception as e:
@@ -36,7 +35,7 @@ class NDBDownloader:
 
         return filepath
 
-    def download_and_extract_zip(self, fileinfo: FileInfo, extract_to: Path) -> List[Path]:
+    def download_and_extract_zip(self, fileinfo: FileInfo, extract_to: Path) -> list[Path]:
         """ZIPファイルをダウンロードして展開。展開したファイルの Path リストを返す。"""
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -44,7 +43,7 @@ class NDBDownloader:
 
             extracted = []
             try:
-                with zipfile.ZipFile(zip_path, 'r') as z:
+                with zipfile.ZipFile(zip_path, "r") as z:
                     # ZIP Slip対策
                     for info in z.infolist():
                         target = td_path / info.filename
@@ -59,7 +58,7 @@ class NDBDownloader:
                         pattern = rf"{FILENAME_PATTERN}\.xlsx"
                         mob = re.search(pattern, info.filename)
                         if mob:
-                            if (mob.group(2) == '歯科用薬剤' and mob.group(5) == '_歯科') or mob.group(5) is None:
+                            if (mob.group(2) == "歯科用薬剤" and mob.group(5) == "_歯科") or mob.group(5) is None:
                                 extracted.append(td_path / info.filename)
 
             except Exception as e:
@@ -68,9 +67,9 @@ class NDBDownloader:
 
             # コピー先ディレクトリを作成してファイルを移動
             extract_to.mkdir(parents=True, exist_ok=True)
-            final_paths: List[Path] = []
+            final_paths: list[Path] = []
             for p in extracted:
-                dest = extract_to / f'{fileinfo.nth:0>2}{p.name}'
+                dest = extract_to / f"{fileinfo.nth:0>2}{p.name}"
                 p.replace(dest)
                 final_paths.append(dest)
 
