@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*' # 'v'で始まるタグにのみ反応 (例: v1.0, v2.3.4)
 
+permissions:
+  id-token: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
